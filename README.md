@@ -1,13 +1,13 @@
 # smb-deploy-pipeline
 
-Pipeline de deploy automatizado usando apenas recursos nativos do Windows. Sem dependência externa, sem agente instalado nos servidores de destino, sem licença.
+Pipeline de deploy automatizado usando apenas recursos nativos do Windows. Sem dependencia externa, sem agente instalado nos servidores de destino, sem licenca.
 
 ## Como funciona
 
-O pipeline monitora uma pasta de staging compartilhada via SMB. Quando detecta arquivos novos, distribui automaticamente para todos os servidores de destino configurados, faz backup dos arquivos substituídos, verifica a integridade de cada arquivo via SHA256 e registra tudo em log.
+O pipeline monitora uma pasta de staging compartilhada via SMB. Quando detecta arquivos novos, distribui automaticamente para todos os servidores de destino configurados, faz backup dos arquivos substituidos, verifica a integridade de cada arquivo via SHA256 e registra tudo em log.
 
 ```
-Dev deposita arquivo em \\servidor\staging
+Dev deposita arquivo em \\fileserver\staging
         |
 Task Agendada (a cada N minutos)
         |
@@ -31,16 +31,16 @@ Detecta arquivo novo?
 ## Pre-requisitos
 
 - Windows PowerShell 5.1 ou superior
-- Permissao de escrita nos servidores de destino via UNC path (`\\servidor\C$\...`)
+- Permissao de escrita nos servidores de destino via UNC path
 - Permissao administrativa nos servidores de destino para operacoes WMI
 - Compartilhamento SMB acessivel para o servidor que roda o script
 
 ## Estrutura de pastas esperada
 
 ```
-\\servidor-arquivos\deploy\
-    Newcon_PRD\          <- staging PRD (dev deposita aqui)
-    Newcon_HML\          <- staging HML (dev deposita aqui)
+\\fileserver\deploy\
+    staging-prd\         <- dev deposita aqui
+    staging-hml\         <- dev deposita aqui
     Enviados\
         PRD\
             20250528_143022\
@@ -58,23 +58,23 @@ Edite o bloco `$CONFIG` no inicio do script:
 ```powershell
 $CONFIG = @{
     Staging = @{
-        PRD = "\\seu-servidor\deploy\PRD"
-        HML = "\\seu-servidor\deploy\HML"
+        PRD = "\\fileserver\deploy\staging-prd"
+        HML = "\\fileserver\deploy\staging-hml"
     }
     Enviados = @{
-        PRD = "\\seu-servidor\deploy\Enviados\PRD"
-        HML = "\\seu-servidor\deploy\Enviados\HML"
+        PRD = "\\fileserver\deploy\Enviados\PRD"
+        HML = "\\fileserver\deploy\Enviados\HML"
     }
     Servidores = @{
         SRV01 = "192.168.1.10"
         SRV02 = "192.168.1.11"
     }
     Destino = @{
-        PRD = "C:\MinhaApp\PRD"
-        HML = "C:\MinhaApp\HML"
+        PRD = "C:\App\PRD"
+        HML = "C:\App\HML"
     }
-    Backup = "C:\Backups"
-    Log    = "\\seu-servidor\deploy\Enviados\deploy_master.log"
+    Backup = "C:\App\Backups"
+    Log    = "\\fileserver\deploy\Enviados\deploy_master.log"
 }
 ```
 
@@ -93,19 +93,19 @@ Register-ScheduledTask -TaskName "SMB-Deploy-Pipeline" -Action $action -Trigger 
 
 Ajuste o intervalo `-Minutes 5` conforme necessario.
 
-## Como o dev usa
+## Como usar
 
-1. Copiar os arquivos para a pasta de staging correspondente ao ambiente
+1. Copiar os arquivos para a pasta de staging do ambiente desejado
 2. Aguardar o proximo ciclo (padrao: 5 minutos)
 3. Verificar o log em `Enviados\<ambiente>\<timestamp>\deploy.log`
 
 Para subpastas, replicar a estrutura no staging:
 
 ```
-staging\PRD\
-    app.exe              -> C:\MinhaApp\PRD\app.exe
+staging-prd\
+    app.exe              -> C:\App\PRD\app.exe
     plugins\
-        plugin.dll       -> C:\MinhaApp\PRD\plugins\plugin.dll
+        plugin.dll       -> C:\App\PRD\plugins\plugin.dll
 ```
 
 ## Log de auditoria
@@ -117,7 +117,7 @@ Cada deploy gera entradas no formato:
 [2025-05-28 14:30:23] [OK]   Backup: app.exe
 [2025-05-28 14:30:23] [INFO] SHA256 origem  : A3F1D2B7C9E4F1A2...
 [2025-05-28 14:30:24] [INFO] SHA256 destino : A3F1D2B7C9E4F1A2...
-[2025-05-28 14:30:24] [OK]   [OK] app.exe - integridade confirmada
+[2025-05-28 14:30:24] [OK]   app.exe - integridade confirmada
 [2025-05-28 14:30:25] [OK]   [PRD] Concluido: 4 OK | 0 erro(s)
 ```
 
