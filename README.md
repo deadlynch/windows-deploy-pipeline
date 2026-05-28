@@ -28,95 +28,106 @@ Detecta arquivo novo?
 - Log por deploy e log master centralizado
 - Limpeza automatica do staging apos cada ciclo
 
+## Modos de acesso
+
+O script suporta dois modos, configurados pela variavel `$MODO_ACESSO` no topo do script.
+
+| | UNC_ADMIN | UNC_SHARE |
+|---|---|---|
+| Configuracao nos servidores | Nenhuma | Criar compartilhamentos SMB |
+| Escopo de acesso | Disco inteiro (C:\\) | Apenas pasta da aplicacao |
+| Permissao necessaria | Administrador local | Permissao no compartilhamento |
+| Indicado para | Ambientes internos controlados | Ambientes com requisitos de seguranca |
+
+**UNC_ADMIN** usa o compartilhamento administrativo nativo do Windows (`C$`). Nao requer configuracao adicional, mas expoe o disco inteiro do servidor. Risco aceitavel em ambientes internos controlados.
+
+**UNC_SHARE** usa um compartilhamento SMB dedicado, restrito apenas a pasta da aplicacao. Requer criacao previa em cada servidor de destino:
+
+```powershell
+New-SmbShare -Name "AppDeploy-PRD" -Path "C:\App\PRD" -FullAccess "DOMINIO\svc-deploy"
+New-SmbShare -Name "AppDeploy-HML" -Path "C:\App\HML" -FullAccess "DOMINIO\svc-deploy"
+New-SmbShare -Name "AppDeploy-Backup" -Path "C:\App\Backups" -FullAccess "DOMINIO\svc-deploy"
+```
+
 ## Pre-requisitos
 
 ### Conta de servico
 
-O script precisa rodar sob uma conta com privilegios administrativos nos servidores de destino. O recomendado e criar uma conta de servico dedicada (ex: `svc-deploy`) e adicioná-la ao grupo **Administrators** em cada servidor de destino.
+Crie uma conta de servico dedicada (ex: `svc-deploy`) com o minimo de privilegio necessario. Para o modo UNC_ADMIN, adicione-a ao grupo Administrators nos servidores de destino. Para o modo UNC_SHARE, conceda permissao apenas nos compartilhamentos criados.
 
-### Acesso via UNC path (C$)
+Nunca use uma conta de usuario real ou o Administrator built-in.
 
-O script acessa os servidores de destino via compartilhamento administrativo padrao do Windows (`C$`). Para isso funcionar:
+### Compartilhamento C$ (somente UNC_ADMIN)
 
-1. O compartilhamento administrativo precisa estar habilitado nos servidores de destino. Verifique com:
+Verifique se o compartilhamento administrativo esta habilitado nos servidores de destino:
+
 ```powershell
 Get-SmbShare -Name "C$"
 ```
 
-2. Se estiver desabilitado, habilite via registro:
+Se estiver desabilitado, habilite via registro:
+
 ```powershell
 Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
     -Name "AutoShareWks" -Value 1 -Type DWord
 Restart-Service LanmanServer
 ```
 
-3. O firewall dos servidores de destino precisa permitir o compartilhamento de arquivos. Habilite a regra:
+### Firewall
+
+Habilite as regras necessarias nos servidores de destino:
+
 ```powershell
 Enable-NetFirewallRule -DisplayGroup "File and Printer Sharing"
+Enable-NetFirewallRule -DisplayGroup "Windows Management Instrumentation (WMI)"
 ```
 
-### Acesso WMI remoto
+### WMI remoto
 
-O WMI e usado para identificar e encerrar processos que estejam com arquivos bloqueados. Para habilitar nos servidores de destino:
+O WMI e usado para encerrar processos que estejam segurando arquivos em uso. Habilite o servico nos servidores de destino:
 
-1. Habilite o servico WMI:
 ```powershell
 Set-Service -Name Winmgmt -StartupType Automatic
 Start-Service Winmgmt
 ```
 
-2. Libere o WMI no firewall:
-```powershell
-Enable-NetFirewallRule -DisplayGroup "Windows Management Instrumentation (WMI)"
-```
+Confirme que a conta de servico tem permissao no namespace WMI:
 
-3. Confirme que a conta de servico tem permissao no namespace WMI. No servidor de destino, execute:
 ```
 wmimgmt.msc -> WMI Control (Local) -> Properties -> Security -> Root -> Security
 ```
-Adicione a conta de servico com permissao **Enable Account** e **Remote Enable**.
+
+Adicione a conta com permissao **Enable Account** e **Remote Enable**.
 
 ### Execution Policy
 
-No servidor que vai rodar o script (onde a task agendada sera registrada), configure a Execution Policy:
+No servidor que vai rodar o script:
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine -Force
 ```
 
-### Resumo dos pre-requisitos
+### Resumo
 
 | Requisito | Onde configurar |
 |---|---|
-| Conta com privilegios de admin | Servidores de destino |
-| Compartilhamento C$ habilitado | Servidores de destino |
+| Conta de servico dedicada | Servidores de destino |
+| Compartilhamento C$ habilitado | Servidores de destino (UNC_ADMIN) |
+| Compartilhamentos SMB dedicados | Servidores de destino (UNC_SHARE) |
 | Firewall: File and Printer Sharing | Servidores de destino |
 | Firewall: WMI | Servidores de destino |
 | Servico WMI habilitado | Servidores de destino |
 | Execution Policy: Bypass | Servidor que roda o script |
 | Acesso de escrita ao compartilhamento SMB | Servidor de arquivos |
 
-## Estrutura de pastas esperada
-
-```
-\\fileserver\deploy\
-    staging-prd\         <- dev deposita aqui
-    staging-hml\         <- dev deposita aqui
-    Enviados\
-        PRD\
-            20250528_143022\
-                arquivo.exe
-                deploy.log
-        HML\
-            ...
-        deploy_master.log
-```
-
 ## Configuracao
 
-Edite o bloco `$CONFIG` no inicio do script:
+Edite o bloco `$CONFIG` e a variavel `$MODO_ACESSO` no inicio do script:
 
 ```powershell
+$MODO_ACESSO = "UNC_ADMIN"  # ou "UNC_SHARE"
+$DIAS_RETENCAO_BACKUP = 30  # backups mais antigos que N dias sao removidos automaticamente
+
 $CONFIG = @{
     Staging = @{
         PRD = "\\fileserver\deploy\staging-prd"
@@ -134,8 +145,10 @@ $CONFIG = @{
         PRD = "C:\App\PRD"
         HML = "C:\App\HML"
     }
-    Backup = "C:\App\Backups"
-    Log    = "\\fileserver\deploy\Enviados\deploy_master.log"
+    Backup     = "C:\App\Backups"
+    ShareNome  = @{ PRD = "AppDeploy-PRD"; HML = "AppDeploy-HML" }  # UNC_SHARE
+    ShareBackup = "AppDeploy-Backup"                                  # UNC_SHARE
+    Log        = "\\fileserver\deploy\Enviados\deploy_master.log"
 }
 ```
 
@@ -152,7 +165,7 @@ Register-ScheduledTask -TaskName "SMB-Deploy-Pipeline" -Action $action -Trigger 
                -Settings $settings -RunLevel Highest -Force
 ```
 
-Ajuste o intervalo `-Minutes 5` conforme necessario.
+Ajuste `-Minutes 5` conforme necessario. A task roda independente de usuario logado.
 
 ## Como usar
 
@@ -182,116 +195,50 @@ Cada deploy gera entradas no formato:
 [2025-05-28 14:30:25] [OK]   [PRD] Concluido: 4 OK | 0 erro(s)
 ```
 
-## Licenca
-
-MIT
-
-## Modos de acesso aos servidores de destino
-
-O script suporta dois modos, configurados pela variavel `$MODO_ACESSO` no topo do script.
-
-### UNC_ADMIN (padrao)
-
-Acessa os servidores via compartilhamento administrativo nativo do Windows (`C$`). Nao requer configuracao adicional nos servidores de destino, mas a conta de servico precisa ser Administrador local.
-
-**Risco:** o `C$` expoe o disco inteiro do servidor. Uma conta comprometida tem acesso total a `C:\`.
-
-Indicado para ambientes internos controlados onde o risco e aceitavel.
-
-### UNC_SHARE (recomendado para ambientes com requisitos de seguranca)
-
-Acessa os servidores via compartilhamento SMB dedicado, restrito apenas a pasta da aplicacao. Requer criacao previa do compartilhamento em cada servidor de destino:
-
-```powershell
-# Execute em cada servidor de destino
-New-SmbShare -Name "AppDeploy-PRD" -Path "C:\App\PRD" -FullAccess "DOMINIO\svc-deploy"
-New-SmbShare -Name "AppDeploy-HML" -Path "C:\App\HML" -FullAccess "DOMINIO\svc-deploy"
-New-SmbShare -Name "AppDeploy-Backup" -Path "C:\App\Backups" -FullAccess "DOMINIO\svc-deploy"
-```
-
-Depois ajuste `$MODO_ACESSO` no script:
-
-```powershell
-$MODO_ACESSO = "UNC_SHARE"
-```
-
-E configure os nomes dos compartilhamentos no `$CONFIG`:
-
-```powershell
-ShareNome = @{
-    PRD = "AppDeploy-PRD"
-    HML = "AppDeploy-HML"
-}
-ShareBackup = "AppDeploy-Backup"
-```
-
-### Comparativo
-
-| | UNC_ADMIN | UNC_SHARE |
-|---|---|---|
-| Configuracao nos servidores | Nenhuma | Criar compartilhamentos SMB |
-| Escopo de acesso | Disco inteiro (C:\) | Apenas pasta da aplicacao |
-| Permissao necessaria | Administrador local | Permissao no compartilhamento |
-| Indicado para | Ambientes internos controlados | Ambientes com requisitos de seguranca |
+O log master centralizado acumula o historico completo em `deploy_master.log`.
 
 ## Seguranca
 
-### Conta de servico
-
-Nunca execute o script sob uma conta de usuario real ou sob o Administrator built-in. Crie uma conta de servico dedicada com o minimo de privilegio necessario:
-
-- Permissao de escrita na pasta de staging
-- Permissao de escrita nas pastas de destino nos servidores
-- Permissao administrativa nos servidores de destino apenas se usar WMI para liberar arquivos em uso
-
 ### Credenciais
 
-Nunca armazene senhas em texto no script. Use o Windows Credential Manager para armazenar as credenciais da conta de servico:
+Nunca armazene senhas em texto no script. Use o Windows Credential Manager:
 
 ```powershell
 cmdkey /add:192.168.1.10 /user:DOMINIO\svc-deploy /pass:SuaSenha
 cmdkey /add:192.168.1.11 /user:DOMINIO\svc-deploy /pass:SuaSenha
 ```
 
-A task agendada usa as credenciais armazenadas automaticamente, sem expor nada no codigo.
-
 ### Integridade do staging
 
-A pasta de staging e o ponto de entrada do pipeline. Qualquer pessoa com permissao de escrita nela pode distribuir arquivos para todos os servidores de destino. Restrinja o acesso:
+A pasta de staging e o ponto de entrada do pipeline. Restrinja o acesso:
 
-- Leitura: todos os usuarios que precisam monitorar
 - Escrita: apenas a conta de servico e o time autorizado a fazer deploy
+- Leitura: todos os usuarios que precisam monitorar
 
-Em ambientes com Active Directory, use grupos de seguranca para gerenciar isso de forma centralizada.
+Em ambientes com Active Directory, use grupos de seguranca para gerenciar o acesso de forma centralizada.
 
-### Auditoria de acesso ao staging
+### Auditoria de quem depositou arquivos
 
-O log do pipeline registra o que foi enviado e quando, mas nao registra quem depositou o arquivo no staging. Para rastrear isso, habilite auditoria de acesso a objeto no servidor de arquivos via Group Policy:
+O log do pipeline registra o que foi enviado e quando, mas nao registra quem depositou o arquivo no staging. Para rastrear isso, habilite auditoria via Group Policy no servidor de arquivos:
 
 ```
-Computer Configuration
-  -> Windows Settings
-    -> Security Settings
-      -> Advanced Audit Policy
-        -> Object Access
-          -> Audit File System: Success e Failure
+Computer Configuration -> Windows Settings -> Security Settings
+-> Advanced Audit Policy -> Object Access -> Audit File System: Success e Failure
 ```
-
-Os eventos ficam registrados no Event Viewer do servidor de arquivos e podem ser correlacionados com os logs do pipeline.
 
 ### Assinatura SMB
 
-O SMB por padrao pode trafegar sem assinatura dependendo da versao e configuracao do ambiente. Para garantir integridade no transporte, force SMB signing nos servidores:
+Para garantir integridade no transporte, force SMB signing:
 
 ```powershell
 Set-SmbServerConfiguration -RequireSecuritySignature $true -Force
 Set-SmbClientConfiguration -RequireSecuritySignature $true -Force
 ```
 
-### Retencao de backups
-
-O script cria uma pasta de backup por ciclo de deploy. Sem politica de retencao, o disco dos servidores de destino pode lotar com o tempo. O script inclui uma rotina de limpeza automatica configuravel pela variavel `$DIAS_RETENCAO_BACKUP` no topo do script. O padrao e 30 dias.
-
 ### O que o script nao resolve
 
-O pipeline confia no que chega na pasta de staging. Nao ha validacao se o artefato e legitimo, se passou por testes ou se foi aprovado. Esse controle precisa existir no processo, nao no script. Definir claramente quem pode escrever na pasta de staging e o principal mecanismo de seguranca do pipeline.
+O pipeline confia no que chega na pasta de staging. Nao ha validacao se o artefato e legitimo, se passou por testes ou se foi aprovado. Esse controle precisa existir no processo. Definir claramente quem pode escrever na pasta de staging e o principal mecanismo de seguranca do pipeline.
+
+## Licenca
+
+MIT
