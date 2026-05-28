@@ -233,3 +233,65 @@ ShareBackup = "AppDeploy-Backup"
 | Escopo de acesso | Disco inteiro (C:\) | Apenas pasta da aplicacao |
 | Permissao necessaria | Administrador local | Permissao no compartilhamento |
 | Indicado para | Ambientes internos controlados | Ambientes com requisitos de seguranca |
+
+## Seguranca
+
+### Conta de servico
+
+Nunca execute o script sob uma conta de usuario real ou sob o Administrator built-in. Crie uma conta de servico dedicada com o minimo de privilegio necessario:
+
+- Permissao de escrita na pasta de staging
+- Permissao de escrita nas pastas de destino nos servidores
+- Permissao administrativa nos servidores de destino apenas se usar WMI para liberar arquivos em uso
+
+### Credenciais
+
+Nunca armazene senhas em texto no script. Use o Windows Credential Manager para armazenar as credenciais da conta de servico:
+
+```powershell
+cmdkey /add:192.168.1.10 /user:DOMINIO\svc-deploy /pass:SuaSenha
+cmdkey /add:192.168.1.11 /user:DOMINIO\svc-deploy /pass:SuaSenha
+```
+
+A task agendada usa as credenciais armazenadas automaticamente, sem expor nada no codigo.
+
+### Integridade do staging
+
+A pasta de staging e o ponto de entrada do pipeline. Qualquer pessoa com permissao de escrita nela pode distribuir arquivos para todos os servidores de destino. Restrinja o acesso:
+
+- Leitura: todos os usuarios que precisam monitorar
+- Escrita: apenas a conta de servico e o time autorizado a fazer deploy
+
+Em ambientes com Active Directory, use grupos de seguranca para gerenciar isso de forma centralizada.
+
+### Auditoria de acesso ao staging
+
+O log do pipeline registra o que foi enviado e quando, mas nao registra quem depositou o arquivo no staging. Para rastrear isso, habilite auditoria de acesso a objeto no servidor de arquivos via Group Policy:
+
+```
+Computer Configuration
+  -> Windows Settings
+    -> Security Settings
+      -> Advanced Audit Policy
+        -> Object Access
+          -> Audit File System: Success e Failure
+```
+
+Os eventos ficam registrados no Event Viewer do servidor de arquivos e podem ser correlacionados com os logs do pipeline.
+
+### Assinatura SMB
+
+O SMB por padrao pode trafegar sem assinatura dependendo da versao e configuracao do ambiente. Para garantir integridade no transporte, force SMB signing nos servidores:
+
+```powershell
+Set-SmbServerConfiguration -RequireSecuritySignature $true -Force
+Set-SmbClientConfiguration -RequireSecuritySignature $true -Force
+```
+
+### Retencao de backups
+
+O script cria uma pasta de backup por ciclo de deploy. Sem politica de retencao, o disco dos servidores de destino pode lotar com o tempo. O script inclui uma rotina de limpeza automatica configuravel pela variavel `$DIAS_RETENCAO_BACKUP` no topo do script. O padrao e 30 dias.
+
+### O que o script nao resolve
+
+O pipeline confia no que chega na pasta de staging. Nao ha validacao se o artefato e legitimo, se passou por testes ou se foi aprovado. Esse controle precisa existir no processo, nao no script. Definir claramente quem pode escrever na pasta de staging e o principal mecanismo de seguranca do pipeline.
