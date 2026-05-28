@@ -6,6 +6,22 @@
 # Configure the $CONFIG block below before use
 # =============================================================================
 
+# =============================================================================
+# MODO DE ACESSO AOS SERVIDORES DE DESTINO
+#
+# "UNC_ADMIN" : usa o compartilhamento administrativo padrao C$ do Windows
+#               Nao requer configuracao adicional nos servidores de destino
+#               A conta de servico precisa ser Administrador local
+#               RISCO: expoe o disco inteiro do servidor
+#               Indicado para ambientes internos controlados
+#
+# "UNC_SHARE" : usa um compartilhamento SMB dedicado criado em cada servidor
+#               Acesso restrito apenas a pasta da aplicacao
+#               Indicado para ambientes com requisitos de seguranca mais rigorosos
+#               Requer criacao previa do compartilhamento (veja README)
+# =============================================================================
+$MODO_ACESSO = "UNC_ADMIN"
+
 $CONFIG = @{
     Staging = @{
         PRD = "\\fileserver\deploy\staging-prd"
@@ -23,8 +39,16 @@ $CONFIG = @{
         PRD = "C:\App\PRD"
         HML = "C:\App\HML"
     }
+    # Usado apenas no modo UNC_ADMIN
     Backup = "C:\App\Backups"
-    Log    = "\\fileserver\deploy\Enviados\deploy_master.log"
+    # Usado apenas no modo UNC_SHARE - nome do compartilhamento dedicado em cada servidor
+    ShareNome = @{
+        PRD = "AppDeploy-PRD"
+        HML = "AppDeploy-HML"
+    }
+    # Usado apenas no modo UNC_SHARE - pasta de backup dentro do compartilhamento
+    ShareBackup = "AppDeploy-Backup"
+    Log = "\\fileserver\deploy\Enviados\deploy_master.log"
 }
 
 $_logBuffer = [System.Collections.Generic.List[string]]::new()
@@ -65,10 +89,28 @@ function Get-Hash {
     }
 }
 
+function Get-UNCDestino {
+    param([string]$IP, [string]$CaminhoLocal, [string]$Ambiente)
+    if ($MODO_ACESSO -eq "UNC_SHARE") {
+        return "\\$IP\$($CONFIG.ShareNome[$Ambiente])"
+    } else {
+        return "\\$IP\$($CaminhoLocal -replace ':','$')"
+    }
+}
+
+function Get-UNCBackup {
+    param([string]$IP, [string]$Ambiente)
+    if ($MODO_ACESSO -eq "UNC_SHARE") {
+        return "\\$IP\$($CONFIG.ShareBackup)"
+    } else {
+        return "\\$IP\$($CONFIG.Backup -replace ':','$')"
+    }
+}
+
 function Fazer-Backup-Arquivo {
-    param([string]$IP, [string]$CaminhoCompleto, [string]$Label, [string]$Timestamp)
+    param([string]$IP, [string]$CaminhoCompleto, [string]$Label, [string]$Timestamp, [string]$Ambiente)
     if (-not (Test-Path $CaminhoCompleto)) { return }
-    $bkpRaiz = "\\$IP\$($CONFIG.Backup -replace ':','$')\${Label}_${Timestamp}"
+    $bkpRaiz = Join-Path (Get-UNCBackup -IP $IP -Ambiente $Ambiente) "${Label}_${Timestamp}"
     try {
         if (-not (Test-Path $bkpRaiz)) {
             New-Item -ItemType Directory -Path $bkpRaiz -Force | Out-Null
@@ -103,11 +145,12 @@ function Copiar-Arquivo {
         [string]$StagingBase,
         [string]$Label,
         [string]$Timestamp,
+        [string]$Ambiente,
         [System.IO.FileInfo]$Arquivo
     )
 
     $relativo    = $Arquivo.FullName.Substring($StagingBase.Length).TrimStart('\')
-    $destinoBase = "\\$IP\$($CaminhoDestinoBase -replace ':','$')"
+    $destinoBase = Get-UNCDestino -IP $IP -CaminhoLocal $CaminhoDestinoBase -Ambiente $Ambiente
     $destinoDir  = Join-Path $destinoBase (Split-Path $relativo -Parent)
     $dest        = Join-Path $destinoBase $relativo
     $old         = "$dest.old"
@@ -130,7 +173,7 @@ function Copiar-Arquivo {
     }
 
     if (Test-Path $dest) {
-        Fazer-Backup-Arquivo -IP $IP -CaminhoCompleto $dest -Label $Label -Timestamp $Timestamp
+        Fazer-Backup-Arquivo -IP $IP -CaminhoCompleto $dest -Label $Label -Timestamp $Timestamp -Ambiente $Ambiente
         try {
             Rename-Item -Path $dest -NewName "$($Arquivo.Name).old" -Force -ErrorAction Stop
         } catch {
@@ -213,7 +256,7 @@ function Executar-Deploy {
             continue
         }
 
-        $bkpUNC = "\\$ip\$($CONFIG.Backup -replace ':','$')"
+        $bkpUNC = Get-UNCBackup -IP $ip -Ambiente $Ambiente
         if (-not (Test-Path $bkpUNC)) {
             try { New-Item -ItemType Directory -Path $bkpUNC -Force | Out-Null } catch {}
         }
@@ -224,6 +267,7 @@ function Executar-Deploy {
                                  -StagingBase $stagingPath `
                                  -Label $Ambiente `
                                  -Timestamp $timestamp `
+                                 -Ambiente $Ambiente `
                                  -Arquivo $arq
             if ($ok) { $totalOK++ } else { $totalErro++ }
         }
@@ -262,11 +306,11 @@ function Executar-Deploy {
 
 Write-Host ""
 Write-Host "  ================================================" -ForegroundColor DarkCyan
-Write-Host "     SMB Deploy Pipeline" -ForegroundColor DarkCyan
+Write-Host "     SMB Deploy Pipeline [$MODO_ACESSO]" -ForegroundColor DarkCyan
 Write-Host "  ================================================" -ForegroundColor DarkCyan
 Write-Host ""
 
-Write-Log "=== Inicio do ciclo de deploy ==="
+Write-Log "=== Inicio do ciclo de deploy === Modo: $MODO_ACESSO"
 Garantir-Pastas
 Executar-Deploy -Ambiente "PRD"
 Executar-Deploy -Ambiente "HML"
