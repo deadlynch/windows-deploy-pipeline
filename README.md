@@ -30,10 +30,71 @@ Detecta arquivo novo?
 
 ## Pre-requisitos
 
-- Windows PowerShell 5.1 ou superior
-- Permissao de escrita nos servidores de destino via UNC path
-- Permissao administrativa nos servidores de destino para operacoes WMI
-- Compartilhamento SMB acessivel para o servidor que roda o script
+### Conta de servico
+
+O script precisa rodar sob uma conta com privilegios administrativos nos servidores de destino. O recomendado e criar uma conta de servico dedicada (ex: `svc-deploy`) e adicioná-la ao grupo **Administrators** em cada servidor de destino.
+
+### Acesso via UNC path (C$)
+
+O script acessa os servidores de destino via compartilhamento administrativo padrao do Windows (`C$`). Para isso funcionar:
+
+1. O compartilhamento administrativo precisa estar habilitado nos servidores de destino. Verifique com:
+```powershell
+Get-SmbShare -Name "C$"
+```
+
+2. Se estiver desabilitado, habilite via registro:
+```powershell
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+    -Name "AutoShareWks" -Value 1 -Type DWord
+Restart-Service LanmanServer
+```
+
+3. O firewall dos servidores de destino precisa permitir o compartilhamento de arquivos. Habilite a regra:
+```powershell
+Enable-NetFirewallRule -DisplayGroup "File and Printer Sharing"
+```
+
+### Acesso WMI remoto
+
+O WMI e usado para identificar e encerrar processos que estejam com arquivos bloqueados. Para habilitar nos servidores de destino:
+
+1. Habilite o servico WMI:
+```powershell
+Set-Service -Name Winmgmt -StartupType Automatic
+Start-Service Winmgmt
+```
+
+2. Libere o WMI no firewall:
+```powershell
+Enable-NetFirewallRule -DisplayGroup "Windows Management Instrumentation (WMI)"
+```
+
+3. Confirme que a conta de servico tem permissao no namespace WMI. No servidor de destino, execute:
+```
+wmimgmt.msc -> WMI Control (Local) -> Properties -> Security -> Root -> Security
+```
+Adicione a conta de servico com permissao **Enable Account** e **Remote Enable**.
+
+### Execution Policy
+
+No servidor que vai rodar o script (onde a task agendada sera registrada), configure a Execution Policy:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine -Force
+```
+
+### Resumo dos pre-requisitos
+
+| Requisito | Onde configurar |
+|---|---|
+| Conta com privilegios de admin | Servidores de destino |
+| Compartilhamento C$ habilitado | Servidores de destino |
+| Firewall: File and Printer Sharing | Servidores de destino |
+| Firewall: WMI | Servidores de destino |
+| Servico WMI habilitado | Servidores de destino |
+| Execution Policy: Bypass | Servidor que roda o script |
+| Acesso de escrita ao compartilhamento SMB | Servidor de arquivos |
 
 ## Estrutura de pastas esperada
 
