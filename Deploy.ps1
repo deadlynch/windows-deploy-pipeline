@@ -22,6 +22,9 @@
 # =============================================================================
 $MODO_ACESSO = "UNC_ADMIN"
 
+# Numero de dias para manter backups. Backups mais antigos sao removidos automaticamente.
+$DIAS_RETENCAO_BACKUP = 30
+
 $CONFIG = @{
     Staging = @{
         PRD = "\\fileserver\deploy\staging-prd"
@@ -76,6 +79,23 @@ function Garantir-Pastas {
     foreach ($p in @($CONFIG.Enviados.PRD, $CONFIG.Enviados.HML)) {
         if (-not (Test-Path $p)) {
             New-Item -ItemType Directory -Path $p -Force | Out-Null
+        }
+    }
+}
+
+function Limpar-BackupsAntigos {
+    param([string]$IP, [string]$Ambiente)
+    $bkpUNC = Get-UNCBackup -IP $IP -Ambiente $Ambiente
+    if (-not (Test-Path $bkpUNC)) { return }
+    $limite = (Get-Date).AddDays(-$DIAS_RETENCAO_BACKUP)
+    $pastas = Get-ChildItem -Path $bkpUNC -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.CreationTime -lt $limite }
+    foreach ($pasta in $pastas) {
+        try {
+            Remove-Item -Path $pasta.FullName -Recurse -Force
+            Write-Log "Backup antigo removido: $($pasta.Name)" "OK"
+        } catch {
+            Write-Log "Nao foi possivel remover backup antigo $($pasta.Name): $_" "AVISO"
         }
     }
 }
@@ -260,6 +280,8 @@ function Executar-Deploy {
         if (-not (Test-Path $bkpUNC)) {
             try { New-Item -ItemType Directory -Path $bkpUNC -Force | Out-Null } catch {}
         }
+
+        Limpar-BackupsAntigos -IP $ip -Ambiente $Ambiente
 
         foreach ($arq in $arquivos) {
             $ok = Copiar-Arquivo -IP $ip `
