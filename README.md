@@ -185,3 +185,51 @@ Cada deploy gera entradas no formato:
 ## Licenca
 
 MIT
+
+## Modos de acesso aos servidores de destino
+
+O script suporta dois modos, configurados pela variavel `$MODO_ACESSO` no topo do script.
+
+### UNC_ADMIN (padrao)
+
+Acessa os servidores via compartilhamento administrativo nativo do Windows (`C$`). Nao requer configuracao adicional nos servidores de destino, mas a conta de servico precisa ser Administrador local.
+
+**Risco:** o `C$` expoe o disco inteiro do servidor. Uma conta comprometida tem acesso total a `C:\`.
+
+Indicado para ambientes internos controlados onde o risco e aceitavel.
+
+### UNC_SHARE (recomendado para ambientes com requisitos de seguranca)
+
+Acessa os servidores via compartilhamento SMB dedicado, restrito apenas a pasta da aplicacao. Requer criacao previa do compartilhamento em cada servidor de destino:
+
+```powershell
+# Execute em cada servidor de destino
+New-SmbShare -Name "AppDeploy-PRD" -Path "C:\App\PRD" -FullAccess "DOMINIO\svc-deploy"
+New-SmbShare -Name "AppDeploy-HML" -Path "C:\App\HML" -FullAccess "DOMINIO\svc-deploy"
+New-SmbShare -Name "AppDeploy-Backup" -Path "C:\App\Backups" -FullAccess "DOMINIO\svc-deploy"
+```
+
+Depois ajuste `$MODO_ACESSO` no script:
+
+```powershell
+$MODO_ACESSO = "UNC_SHARE"
+```
+
+E configure os nomes dos compartilhamentos no `$CONFIG`:
+
+```powershell
+ShareNome = @{
+    PRD = "AppDeploy-PRD"
+    HML = "AppDeploy-HML"
+}
+ShareBackup = "AppDeploy-Backup"
+```
+
+### Comparativo
+
+| | UNC_ADMIN | UNC_SHARE |
+|---|---|---|
+| Configuracao nos servidores | Nenhuma | Criar compartilhamentos SMB |
+| Escopo de acesso | Disco inteiro (C:\) | Apenas pasta da aplicacao |
+| Permissao necessaria | Administrador local | Permissao no compartilhamento |
+| Indicado para | Ambientes internos controlados | Ambientes com requisitos de seguranca |
